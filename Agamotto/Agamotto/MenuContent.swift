@@ -3,6 +3,7 @@ import SwiftUI
 /// The menu shown from the status-bar item.
 struct MenuContent: View {
     @ObservedObject private var controller = ReplayController.shared
+    @Environment(\.openSettings) private var openSettings
 
     var body: some View {
         Text(controller.statusText)
@@ -18,6 +19,13 @@ struct MenuContent: View {
             Button("Reveal Last Clip in Finder") { controller.revealLastClip() }
         }
         Button("Open Clips Folder") { controller.openClipsFolder() }
+
+        Divider()
+
+        Button("Settings…") {
+            NSApp.activate(ignoringOtherApps: true)
+            openSettings()
+        }
 
         if controller.state == .needsScreenPermission {
             Divider()

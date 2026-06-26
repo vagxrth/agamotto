@@ -4,7 +4,8 @@ import Combine
 import Foundation
 
 /// App-level owner of the capture engine. Keeps a `SegmentRecorder` armed in the background,
-/// exposes state for the menu UI, and performs "save last N seconds" on demand.
+/// exposes state for the menu UI, and performs "save last N seconds" on demand. Configuration
+/// comes from persisted `AppSettings`; a capture-affecting change restarts the engine.
 @MainActor
 final class ReplayController: ObservableObject {
     static let shared = ReplayController()
@@ -21,26 +22,27 @@ final class ReplayController: ObservableObject {
     @Published private(set) var lastClipURL: URL?
     @Published private(set) var micActive = false
 
-    // Phase 3 keeps these fixed; a settings UI comes later.
-    private let replaySeconds = 30.0
-    private let bufferSeconds = 120.0
+    @Published var settings: AppSettings {
+        didSet {
+            settings.save()
+            let previous = oldValue
+            Task { await applySettingsChange(from: previous) }
+        }
+    }
+
     private let segmentSeconds = 1.0
-    private let micGainDb: Float = 6
 
     private var recorder: SegmentRecorder?
     private var store: ReplaySegmentStore?
     private var audioStore: ReplayAudioStore?
-    private var captureMic = false
 
     private let liveDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("Agamotto/live", isDirectory: true)
-    private let clipsDirectory: URL = {
-        let movies = FileManager.default.urls(for: .moviesDirectory, in: .userDomainMask).first
-            ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Movies")
-        return movies.appendingPathComponent("Agamotto", isDirectory: true)
-    }()
+    private var clipsDirectory: URL { settings.outputDirectory }
 
-    private init() {}
+    private init() {
+        settings = AppSettings.load()
+    }
 
     var statusText: String {
         switch state {
@@ -70,33 +72,35 @@ final class ReplayController: ObservableObject {
             return
         }
 
-        let micPermission = await Permissions.ensureMicrophone()
-        let captureMic = (micPermission == .granted)
+        let captureMic: Bool
+        if settings.includeMicrophone {
+            captureMic = await Permissions.ensureMicrophone() == .granted
+        } else {
+            captureMic = false
+        }
 
         do {
             try? FileManager.default.createDirectory(at: clipsDirectory, withIntermediateDirectories: true)
             let store = try ReplaySegmentStore(directory: liveDirectory)
-            let audioStore = ReplayAudioStore(sampleRate: 48_000, channels: 2, retainSeconds: bufferSeconds + 5)
-            let config = CaptureConfig(
-                resolution: .p1080,
-                fps: 60,
-                capturesSystemAudio: true,
-                captureMicrophone: captureMic,
-                micGainDb: micGainDb
+            let audioStore = ReplayAudioStore(
+                sampleRate: 48_000,
+                channels: 2,
+                retainSeconds: Double(settings.bufferSeconds) + 5
             )
+            var config = settings.captureConfig
+            config.captureMicrophone = captureMic // gate on actual permission
             let recorder = SegmentRecorder(
                 config: config,
                 store: store,
                 audioStore: audioStore,
                 segmentSeconds: segmentSeconds,
-                bufferSeconds: bufferSeconds
+                bufferSeconds: Double(settings.bufferSeconds)
             )
             try await recorder.start()
 
             self.store = store
             self.audioStore = audioStore
             self.recorder = recorder
-            self.captureMic = captureMic
             self.micActive = captureMic
             self.state = .armed
         } catch {
@@ -111,17 +115,27 @@ final class ReplayController: ObservableObject {
         audioStore = nil
     }
 
+    /// Restart capture only when a capture-affecting setting changed (and we're running).
+    /// Save-time settings (replay length, mic gain, output folder) are read fresh on save.
+    private func applySettingsChange(from previous: AppSettings) async {
+        guard recorder != nil, previous.captureSignature != settings.captureSignature else { return }
+        await stop()
+        await startEngine()
+    }
+
     // MARK: - Save
 
     func saveReplay() {
         guard state == .armed, let recorder, let store, let audioStore else { return }
         state = .saving
-        let includeMic = captureMic
-        let gain = micGainDb
-        let seconds = replaySeconds
-        let output = clipsDirectory.appendingPathComponent("Agamotto \(Self.timestamp()).mp4")
+        let includeMic = micActive
+        let gain = Float(settings.micGainDb)
+        let seconds = Double(settings.replaySeconds)
+        let directory = clipsDirectory
+        let output = directory.appendingPathComponent("Agamotto \(Self.timestamp()).mp4")
 
         Task {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             await recorder.flushForSave()
             let selection = store.selectTrailing(seconds: seconds)
             do {

@@ -35,6 +35,9 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
     private let keepCount: Int
 
     private let queue = DispatchQueue(label: "com.agamotto.ring.capture", qos: .userInitiated)
+    // System audio runs on its own queue so the per-frame video work can't starve it
+    // (avoids audio buffer-queue overload). The audio rings are thread-safe.
+    private let audioQueue = DispatchQueue(label: "com.agamotto.ring.audio", qos: .userInitiated)
     private let hostClock = CMClockGetHostTimeClock()
 
     private var stream: SCStream?
@@ -96,7 +99,7 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
         let stream = SCStream(filter: filter, configuration: streamConfig, delegate: self)
         try stream.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
         if config.capturesSystemAudio {
-            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
+            try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: audioQueue)
         }
         self.stream = stream
 

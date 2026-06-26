@@ -1,3 +1,4 @@
+import AppKit
 import Carbon.HIToolbox
 import SwiftUI
 
@@ -11,6 +12,10 @@ struct AgamottoApp: App {
             MenuContent()
         } label: {
             Image(systemName: menuBarSymbol)
+        }
+
+        Settings {
+            SettingsView()
         }
     }
 
@@ -30,6 +35,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var saveHotKey: GlobalHotKey?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Single instance: if another Agamotto is already capturing, defer to it.
+        if isAnotherInstanceRunning() {
+            NSApp.terminate(nil)
+            return
+        }
+
         ReplayController.shared.start()
 
         // ⌃⌥R — global, works without focus and without an Accessibility prompt (Carbon).
@@ -48,5 +59,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater
+    }
+
+    private func isAnotherInstanceRunning() -> Bool {
+        guard let bundleID = Bundle.main.bundleIdentifier else { return false }
+        let myPID = ProcessInfo.processInfo.processIdentifier
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+            .contains { $0.processIdentifier != myPID }
     }
 }

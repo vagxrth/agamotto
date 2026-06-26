@@ -17,7 +17,7 @@ public final class ReplayAudioStore: @unchecked Sendable {
     }
 
     /// Interleaved Float mix of the window. Mic is scaled by `micGainDb` and summed into the
-    /// system audio, with a hard clamp to [-1, 1].
+    /// system audio, then run through a soft limiter so peaks never hard-clip.
     public func mixedWindow(start: Double, duration: Double, includeMic: Bool, micGainDb: Float) -> [Float] {
         var mix = system.window(start: start, duration: duration)
         guard includeMic else { return mix }
@@ -27,10 +27,20 @@ public final class ReplayAudioStore: @unchecked Sendable {
         let count = min(mix.count, mic.count)
         var index = 0
         while index < count {
-            let summed = mix[index] + mic[index] * gain
-            mix[index] = max(-1, min(1, summed))
+            mix[index] = Self.softClip(mix[index] + mic[index] * gain)
             index += 1
         }
         return mix
+    }
+
+    /// Transparent below the threshold; gently compresses peaks toward ±1 above it, so the
+    /// mic+system sum never exceeds full scale (no hard-clip distortion).
+    private static func softClip(_ x: Float) -> Float {
+        let threshold: Float = 0.8
+        let magnitude = abs(x)
+        guard magnitude > threshold else { return x }
+        let over = magnitude - threshold
+        let limited = threshold + (1 - threshold) * tanhf(over / (1 - threshold))
+        return x < 0 ? -limited : limited
     }
 }
