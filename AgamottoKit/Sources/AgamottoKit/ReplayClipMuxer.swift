@@ -1,10 +1,10 @@
 import AVFoundation
 import Foundation
 
-/// Builds the final clip: mixes the audio window to AAC, then composes the passthrough video
-/// segments with that audio track and exports. Video is never re-encoded; only the (already
-/// mixed) audio is encoded, once. Falls back to a full re-encode only if passthrough can't
-/// handle the composition.
+/// Builds the final clip: composes the passthrough video segments, mixes the audio for the
+/// video's exact duration, encodes that to AAC, and muxes them on separate tracks. Video is
+/// never re-encoded; only the (already mixed) audio is encoded, once. Falls back to a full
+/// re-encode only if passthrough can't handle the composition.
 ///
 /// Video and audio go into **separate, explicit composition tracks** so they overlay on one
 /// timeline. (The `insertTimeRange(of:at:)` convenience method splice-*inserts* instead,
@@ -19,29 +19,9 @@ public enum ReplayClipMuxer {
     ) async throws -> ClipInfo {
         guard !selection.segmentURLs.isEmpty else { throw ReplayExportError.noSegments }
 
-        // 1) Mix the exact host-time window of the saved video, encode to a temp .m4a.
-        let mixed = audioStore.mixedWindow(
-            start: selection.startHostTime,
-            duration: selection.durationSeconds,
-            includeMic: includeMic,
-            micGainDb: micGainDb
-        )
-        let tempAudioURL = output.deletingLastPathComponent()
-            .appendingPathComponent(".agamotto-audio-\(UUID().uuidString).m4a")
-        defer { try? FileManager.default.removeItem(at: tempAudioURL) }
-
-        let haveAudio = !mixed.isEmpty
-        if haveAudio {
-            try AudioFileWriter.writeM4A(
-                interleaved: mixed,
-                sampleRate: audioStore.sampleRate,
-                channels: audioStore.channels,
-                to: tempAudioURL
-            )
-        }
-
-        // 2) Compose: one video track (segments concatenated) + one audio track (the mix),
-        //    overlaid on a shared timeline.
+        // 1) Compose the passthrough video first, so we know its TRUE duration. (Per-segment
+        //    frame-count ÷ fps under-counts real elapsed time during the startup fps ramp,
+        //    which otherwise makes the audio window come out short.)
         let composition = AVMutableComposition()
         guard let videoTrack = composition.addMutableTrack(
             withMediaType: .video,
@@ -63,7 +43,26 @@ public enum ReplayClipMuxer {
             throw ReplayExportError.exportFailed("no video found in selected segments")
         }
 
-        if haveAudio {
+        // 2) Mix the audio for exactly the video's duration (anchored to the same host-time
+        //    window start), encode to a temp .m4a, and overlay it on its own track so the
+        //    audio length matches the video and stays in sync.
+        let mixed = audioStore.mixedWindow(
+            start: selection.startHostTime,
+            duration: cursor.seconds,
+            includeMic: includeMic,
+            micGainDb: micGainDb
+        )
+        let tempAudioURL = output.deletingLastPathComponent()
+            .appendingPathComponent(".agamotto-audio-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: tempAudioURL) }
+
+        if !mixed.isEmpty {
+            try AudioFileWriter.writeM4A(
+                interleaved: mixed,
+                sampleRate: audioStore.sampleRate,
+                channels: audioStore.channels,
+                to: tempAudioURL
+            )
             let audioAsset = AVURLAsset(url: tempAudioURL)
             if let sourceAudio = try await audioAsset.loadTracks(withMediaType: .audio).first {
                 let audioRange = try await sourceAudio.load(.timeRange)
