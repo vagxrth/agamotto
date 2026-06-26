@@ -36,20 +36,33 @@ public struct CaptureConfig: Sendable {
     public var audioSampleRate: Int
     public var audioChannels: Int
     public var capturesSystemAudio: Bool
+    public var captureMicrophone: Bool
+    /// Gain applied to the mic when mixed into the system audio, in dB.
+    public var micGainDb: Float
 
     public init(
         resolution: Resolution,
         fps: Int,
         audioSampleRate: Int = 48_000,
         audioChannels: Int = 2,
-        capturesSystemAudio: Bool = true
+        capturesSystemAudio: Bool = true,
+        captureMicrophone: Bool = false,
+        micGainDb: Float = 6
     ) {
         self.resolution = resolution
         self.fps = max(fps, 1)
         self.audioSampleRate = audioSampleRate
         self.audioChannels = audioChannels
         self.capturesSystemAudio = capturesSystemAudio
+        self.captureMicrophone = captureMicrophone
+        self.micGainDb = micGainDb
     }
 
     public static let default1080p60 = CaptureConfig(resolution: .p1080, fps: 60)
+    public static let default1080p60SystemAndMic = CaptureConfig(
+        resolution: .p1080,
+        fps: 60,
+        capturesSystemAudio: true,
+        captureMicrophone: true
+    )
 }

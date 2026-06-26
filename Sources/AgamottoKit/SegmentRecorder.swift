@@ -10,40 +10,43 @@ public struct RingDiagnostics: Sendable {
     public var pacedFramesAppended = 0
     public var duplicatedFrames = 0   // pacer ticks where no new source frame had arrived
     public var segmentsRotated = 0
-    public var audioBuffersAppended = 0
+    public var systemAudioChunks = 0
+    public var micAudioChunks = 0
+    public var micRunning = false
     public var ringFillSeconds = 0.0
     public var ringSegmentCount = 0
     public var errorMessage: String?
 }
 
-/// The always-on replay buffer: ScreenCaptureKit feeds the latest frame; a constant-rate
-/// pacer emits it (or a duplicate of the last one) every 1/fps into the active segment; the
+/// The always-on replay buffer. ScreenCaptureKit feeds the latest frame; a constant-rate
+/// pacer emits it (or a duplicate) every 1/fps into the active **video-only** segment; the
 /// recorder rotates to a new ~`segmentSeconds` MP4 file on a cadence and prunes old ones.
-/// Each segment is a fresh writer, so it begins on an IDR keyframe — the ring is
-/// keyframe-aligned for free, which lets saves stream-copy.
+/// Audio (system via SCK, mic via AVCaptureSession) flows into the `ReplayAudioStore`'s PCM
+/// rings, tagged with host-clock time, to be windowed + mixed at save time.
 ///
-/// All mutable state lives on `queue` (SCK sample handlers + pacer ticks share it, so no
-/// locks); finalize/prune of rotated-out segments hops to `finalizerQueue`.
+/// All video state lives on `queue` (SCK sample handlers + pacer ticks share it); mic samples
+/// arrive on the capturer's own queue and go straight into a thread-safe ring.
 public final class SegmentRecorder: NSObject, @unchecked Sendable {
     private let config: CaptureConfig
     private let store: ReplaySegmentStore
+    private let audioStore: ReplayAudioStore
     private let segmentSeconds: Double
     private let segmentDuration: CMTime
     private let keepCount: Int
 
     private let queue = DispatchQueue(label: "com.agamotto.ring.capture", qos: .userInitiated)
-    private let finalizerQueue = DispatchQueue(label: "com.agamotto.ring.finalizer", qos: .utility)
     private let hostClock = CMClockGetHostTimeClock()
 
     private var stream: SCStream?
     private var pacerTimer: DispatchSourceTimer?
+    private var micCapturer: MicrophoneCapturer?
 
     // Active segment (on `queue`)
     private var writer: AVAssetWriter?
     private var videoInput: AVAssetWriterInput?
-    private var audioInput: AVAssetWriterInput?
     private var segmentIndex = -1
     private var segmentStartPTS: CMTime?
+    private var segmentStartHostTime = 0.0
     private var segmentFrameCount = 0
     private var activeURL: URL?
 
@@ -53,12 +56,18 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
 
     private var diagnostics = RingDiagnostics()
 
-    public init(config: CaptureConfig, store: ReplaySegmentStore, segmentSeconds: Double, bufferSeconds: Double) {
+    public init(
+        config: CaptureConfig,
+        store: ReplaySegmentStore,
+        audioStore: ReplayAudioStore,
+        segmentSeconds: Double,
+        bufferSeconds: Double
+    ) {
         self.config = config
         self.store = store
+        self.audioStore = audioStore
         self.segmentSeconds = segmentSeconds
         self.segmentDuration = CMTime(seconds: segmentSeconds, preferredTimescale: 600)
-        // Keep enough segments to cover the buffer window, plus a small safety margin.
         self.keepCount = Int((bufferSeconds / segmentSeconds).rounded(.up)) + 3
         super.init()
     }
@@ -91,7 +100,17 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
         }
         self.stream = stream
 
-        // CFR pacer: ticks on the same serial queue as the sample handlers.
+        // Mic runs alongside SCK; best-effort so capture still works if it fails.
+        if config.captureMicrophone {
+            let capturer = MicrophoneCapturer(ring: audioStore.microphone)
+            do {
+                try capturer.start()
+                self.micCapturer = capturer
+            } catch {
+                queue.async { self.diagnostics.errorMessage = "mic: \(error.localizedDescription)" }
+            }
+        }
+
         let interval = 1.0 / Double(config.fps)
         let timer = DispatchSource.makeTimerSource(queue: queue)
         timer.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(1))
@@ -103,6 +122,9 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
     }
 
     public func stop() async {
+        micCapturer?.stop()
+        micCapturer = nil
+
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             queue.async {
                 self.pacerTimer?.cancel()
@@ -113,7 +135,6 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
         if let stream {
             try? await stream.stopCapture()
         }
-        // Finalize whatever is in the active segment.
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             queue.async {
                 guard let writer = self.writer, writer.status == .writing, let url = self.activeURL else {
@@ -121,12 +142,12 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
                     return
                 }
                 let index = self.segmentIndex
+                let startHost = self.segmentStartHostTime
                 let duration = Double(self.segmentFrameCount) / Double(self.config.fps)
                 self.videoInput?.markAsFinished()
-                self.audioInput?.markAsFinished()
                 self.writer = nil
                 writer.finishWriting {
-                    self.store.registerReady(url: url, index: index, durationSeconds: duration)
+                    self.store.registerReady(url: url, index: index, durationSeconds: duration, startHostTime: startHost)
                     continuation.resume()
                 }
             }
@@ -134,8 +155,7 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
     }
 
     /// Finalize the in-progress segment so footage up to *now* is saveable, then immediately
-    /// start a fresh segment so capture continues without a gap. Awaits the finalize so the
-    /// segment file is complete before a save composes it.
+    /// start a fresh one so capture continues without a gap. Awaits the finalize.
     public func flushForSave() async {
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
             queue.async {
@@ -144,17 +164,16 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
                     return
                 }
                 let oldVideo = self.videoInput
-                let oldAudio = self.audioInput
                 let oldIndex = self.segmentIndex
+                let oldStartHost = self.segmentStartHostTime
                 let duration = Double(self.segmentFrameCount) / Double(self.config.fps)
 
                 let now = CMClockGetTime(self.hostClock)
                 self.startNewSegment(at: now)
 
                 oldVideo?.markAsFinished()
-                oldAudio?.markAsFinished()
                 oldWriter.finishWriting {
-                    self.store.registerReady(url: oldURL, index: oldIndex, durationSeconds: duration)
+                    self.store.registerReady(url: oldURL, index: oldIndex, durationSeconds: duration, startHostTime: oldStartHost)
                     continuation.resume()
                 }
             }
@@ -164,6 +183,9 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
     public func diagnosticsSnapshot() -> RingDiagnostics {
         queue.sync {
             var snapshot = diagnostics
+            snapshot.systemAudioChunks = audioStore.system.chunkCount()
+            snapshot.micAudioChunks = audioStore.microphone.chunkCount()
+            snapshot.micRunning = micCapturer?.isRunning ?? false
             snapshot.ringFillSeconds = store.fillSeconds()
             snapshot.ringSegmentCount = store.readyCount()
             return snapshot
@@ -173,7 +195,7 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
     // MARK: - Pacer (on `queue`)
 
     private func onPacerTick() {
-        guard let latest = latestImageBuffer else { return } // nothing captured yet
+        guard let latest = latestImageBuffer else { return }
         let now = CMClockGetTime(hostClock)
 
         if writer == nil {
@@ -200,7 +222,7 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
     private func startNewSegment(at start: CMTime) {
         segmentIndex += 1
         let url = store.segmentURL(index: segmentIndex)
-        guard let (writer, videoInput, audioInput) = makeSegmentWriter(url: url) else {
+        guard let (writer, videoInput) = makeSegmentWriter(url: url) else {
             diagnostics.errorMessage = diagnostics.errorMessage ?? "failed to create segment writer"
             return
         }
@@ -212,9 +234,9 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
         writer.startSession(atSourceTime: start)
         self.writer = writer
         self.videoInput = videoInput
-        self.audioInput = audioInput
         self.activeURL = url
         self.segmentStartPTS = start
+        self.segmentStartHostTime = start.seconds
         self.segmentFrameCount = 0
     }
 
@@ -224,24 +246,22 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
             return
         }
         let oldVideo = videoInput
-        let oldAudio = audioInput
         let oldIndex = segmentIndex
+        let oldStartHost = segmentStartHostTime
         let duration = Double(segmentFrameCount) / Double(config.fps)
 
-        // Start the next segment first so the pacer keeps appending without a gap.
         startNewSegment(at: now)
         diagnostics.segmentsRotated += 1
 
         oldVideo?.markAsFinished()
-        oldAudio?.markAsFinished()
         oldWriter.finishWriting { [weak self] in
             guard let self else { return }
-            self.store.registerReady(url: oldURL, index: oldIndex, durationSeconds: duration)
-            self.finalizerQueue.async { self.store.prune(keepCount: self.keepCount) }
+            self.store.registerReady(url: oldURL, index: oldIndex, durationSeconds: duration, startHostTime: oldStartHost)
+            self.store.prune(keepCount: self.keepCount)
         }
     }
 
-    private func makeSegmentWriter(url: URL) -> (AVAssetWriter, AVAssetWriterInput, AVAssetWriterInput?)? {
+    private func makeSegmentWriter(url: URL) -> (AVAssetWriter, AVAssetWriterInput)? {
         guard let writer = try? AVAssetWriter(outputURL: url, fileType: .mp4) else { return nil }
         let (width, height) = config.resolution.dimensions
         let keyFrameInterval = max(Int((Double(config.fps) * segmentSeconds).rounded()), 1)
@@ -263,23 +283,7 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
         videoInput.expectsMediaDataInRealTime = true
         guard writer.canAdd(videoInput) else { return nil }
         writer.add(videoInput)
-
-        var audioInput: AVAssetWriterInput?
-        if config.capturesSystemAudio {
-            let audioSettings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: config.audioSampleRate,
-                AVNumberOfChannelsKey: config.audioChannels,
-                AVEncoderBitRateKey: 128_000,
-            ]
-            let input = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
-            input.expectsMediaDataInRealTime = true
-            if writer.canAdd(input) {
-                writer.add(input)
-                audioInput = input
-            }
-        }
-        return (writer, videoInput, audioInput)
+        return (writer, videoInput)
     }
 }
 
@@ -302,7 +306,7 @@ extension SegmentRecorder: SCStreamOutput {
         guard sampleBuffer.isValid else { return }
         switch type {
         case .screen: handleVideo(sampleBuffer)
-        case .audio: handleAudio(sampleBuffer)
+        case .audio: handleSystemAudio(sampleBuffer)
         default: break
         }
     }
@@ -324,11 +328,8 @@ extension SegmentRecorder: SCStreamOutput {
         diagnostics.sourceFramesReceived += 1
     }
 
-    private func handleAudio(_ sampleBuffer: CMSampleBuffer) {
-        guard let audioInput, let start = segmentStartPTS else { return }
-        let pts = sampleBuffer.presentationTimeStamp
-        guard pts >= start, audioInput.isReadyForMoreMediaData else { return }
-        audioInput.append(sampleBuffer)
-        diagnostics.audioBuffersAppended += 1
+    private func handleSystemAudio(_ sampleBuffer: CMSampleBuffer) {
+        guard let samples = AudioSampleExtraction.interleavedFloat32(from: sampleBuffer, channels: config.audioChannels) else { return }
+        audioStore.system.append(samples: samples, startTime: sampleBuffer.presentationTimeStamp.seconds)
     }
 }

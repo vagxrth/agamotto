@@ -1,9 +1,18 @@
 import Foundation
 
-/// Manages the on-disk rolling segment ring: file naming, the in-memory index of
-/// finalized ("ready") segments, count-based pruning, and trailing-window selection for
-/// a save. Thread-safe — the recorder registers/prunes from its capture + finalizer queues
-/// while a save reads concurrently.
+/// The trailing window chosen for a save: the video segment files plus the absolute
+/// host-clock start time and total duration, so the audio rings can be sampled over the
+/// exact same window.
+public struct ReplaySelection: Sendable {
+    public let segmentURLs: [URL]
+    public let startHostTime: Double
+    public let durationSeconds: Double
+}
+
+/// Manages the on-disk rolling video-segment ring: file naming, the in-memory index of
+/// finalized ("ready") segments, count-based pruning, and trailing-window selection.
+/// Thread-safe — the recorder registers/prunes from its capture + finalizer queues while a
+/// save reads concurrently.
 public final class ReplaySegmentStore: @unchecked Sendable {
     public let directory: URL
     public let sessionID: String
@@ -12,6 +21,7 @@ public final class ReplaySegmentStore: @unchecked Sendable {
         let url: URL
         let index: Int
         let durationSeconds: Double
+        let startHostTime: Double
     }
 
     private let lock = NSLock()
@@ -24,23 +34,15 @@ public final class ReplaySegmentStore: @unchecked Sendable {
         cleanDirectory()
     }
 
-    /// Stable URL for a given segment index in this session.
     public func segmentURL(index: Int) -> URL {
         directory.appendingPathComponent(String(format: "seg_%@_%06d.mp4", sessionID, index))
     }
 
-    /// Record a finalized segment as available for saving.
-    public func registerReady(url: URL, index: Int, durationSeconds: Double) {
+    public func registerReady(url: URL, index: Int, durationSeconds: Double, startHostTime: Double) {
         lock.lock()
         defer { lock.unlock() }
-        ready.append(Segment(url: url, index: index, durationSeconds: durationSeconds))
+        ready.append(Segment(url: url, index: index, durationSeconds: durationSeconds, startHostTime: startHostTime))
         ready.sort { $0.index < $1.index }
-    }
-
-    public func readySegmentURLs() -> [URL] {
-        lock.lock()
-        defer { lock.unlock() }
-        return ready.map(\.url)
     }
 
     public func fillSeconds() -> Double {
@@ -55,7 +57,7 @@ public final class ReplaySegmentStore: @unchecked Sendable {
         return ready.count
     }
 
-    /// Drop oldest segments (and their files) beyond `keepCount` — this is the ring eviction.
+    /// Drop oldest segments (and their files) beyond `keepCount` — the ring eviction.
     public func prune(keepCount: Int) {
         lock.lock()
         guard ready.count > keepCount else { lock.unlock(); return }
@@ -69,10 +71,10 @@ public final class ReplaySegmentStore: @unchecked Sendable {
         }
     }
 
-    /// Newest-trailing segments whose combined duration covers at least `seconds`, returned
-    /// oldest-first (composition order). Whole-segment selection keeps the window
-    /// keyframe-aligned (every segment starts on a keyframe) so the save can stream-copy.
-    public func selectTrailing(seconds: Double) -> [URL] {
+    /// Newest-trailing segments whose combined duration covers at least `seconds`. Whole-
+    /// segment selection keeps the window keyframe-aligned (every segment starts on a
+    /// keyframe) so the save can stream-copy the video.
+    public func selectTrailing(seconds: Double) -> ReplaySelection {
         lock.lock()
         defer { lock.unlock() }
         var accumulated = 0.0
@@ -82,7 +84,12 @@ public final class ReplaySegmentStore: @unchecked Sendable {
             accumulated += segment.durationSeconds
             if accumulated >= seconds { break }
         }
-        return selected.reversed().map(\.url)
+        let ordered = Array(selected.reversed())
+        return ReplaySelection(
+            segmentURLs: ordered.map(\.url),
+            startHostTime: ordered.first?.startHostTime ?? 0,
+            durationSeconds: ordered.reduce(0) { $0 + $1.durationSeconds }
+        )
     }
 
     private func cleanDirectory() {
