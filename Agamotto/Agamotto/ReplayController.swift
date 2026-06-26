@@ -36,12 +36,26 @@ final class ReplayController: ObservableObject {
     private var store: ReplaySegmentStore?
     private var audioStore: ReplayAudioStore?
 
+    // Recovery
+    private var isRestarting = false
+    private var pendingRestart = false
+    private var restartTimestamps: [Date] = []
+    private var displayChangeWork: DispatchWorkItem?
+
     private let liveDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("Agamotto/live", isDirectory: true)
     private var clipsDirectory: URL { settings.outputDirectory }
 
     private init() {
         settings = AppSettings.load()
+        // Restart capture when displays change (resolution, arrangement, monitor add/remove).
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didChangeScreenParametersNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.handleDisplayChange() }
+        }
     }
 
     var statusText: String {
@@ -96,6 +110,9 @@ final class ReplayController: ObservableObject {
                 segmentSeconds: segmentSeconds,
                 bufferSeconds: Double(settings.bufferSeconds)
             )
+            recorder.onCaptureFailure = { [weak self] in
+                Task { @MainActor in self?.handleCaptureFailure() }
+            }
             try await recorder.start()
 
             self.store = store
@@ -118,7 +135,66 @@ final class ReplayController: ObservableObject {
     /// Restart capture only when a capture-affecting setting changed (and we're running).
     /// Save-time settings (replay length, mic gain, output folder) are read fresh on save.
     private func applySettingsChange(from previous: AppSettings) async {
-        guard recorder != nil, previous.captureSignature != settings.captureSignature else { return }
+        guard recorder != nil,
+              previous.captureSignature != settings.captureSignature,
+              !isRestarting
+        else { return }
+        isRestarting = true
+        defer { isRestarting = false }
+        await stop()
+        await startEngine()
+    }
+
+    // MARK: - Recovery
+
+    private func handleCaptureFailure() {
+        requestRestart(reason: "capture interrupted")
+    }
+
+    private func handleDisplayChange() {
+        // Debounce bursts of screen-parameter changes into a single restart.
+        displayChangeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.requestRestart(reason: "display changed") }
+        displayChangeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: work)
+    }
+
+    /// Restart capture — unless a save is in flight, in which case restart once it finishes.
+    private func requestRestart(reason: String) {
+        guard recorder != nil else { return } // not armed → nothing to recover
+        if state == .saving {
+            pendingRestart = true
+            return
+        }
+        guard !isRestarting else { return }
+        Task { await performRestart() }
+    }
+
+    private func performRestart() async {
+        guard !isRestarting else { return }
+        isRestarting = true
+        defer { isRestarting = false }
+
+        // Crash-loop guard: cap restarts in a window, then pause and retry once after a cooldown.
+        let now = Date()
+        restartTimestamps = restartTimestamps.filter { now.timeIntervalSince($0) < 30 }
+        guard restartTimestamps.count < 3 else {
+            await stop()
+            state = .error("Capture keeps failing — paused, retrying shortly.")
+            Task {
+                try? await Task.sleep(for: .seconds(15))
+                self.restartTimestamps.removeAll()
+                if self.recorder == nil { await self.startEngine() }
+            }
+            return
+        }
+        restartTimestamps.append(now)
+
+        guard Permissions.screenRecordingGranted() else {
+            await stop()
+            state = .needsScreenPermission
+            return
+        }
         await stop()
         await startEngine()
     }
@@ -148,11 +224,14 @@ final class ReplayController: ObservableObject {
                 )
                 self.lastClipURL = clip.url
                 NSSound(named: "Glass")?.play()
+                self.state = .armed
             } catch {
                 self.state = .error("save failed: \(error)")
-                return
             }
-            self.state = .armed
+            if self.pendingRestart {
+                self.pendingRestart = false
+                self.requestRestart(reason: "deferred after save")
+            }
         }
     }
 

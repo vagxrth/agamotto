@@ -59,6 +59,10 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
 
     private var diagnostics = RingDiagnostics()
 
+    /// Invoked when the capture stream stops with an error (revoked permission, display change,
+    /// SCK service interruption). Set by the owner to drive recovery.
+    public var onCaptureFailure: (@Sendable () -> Void)?
+
     public init(
         config: CaptureConfig,
         store: ReplaySegmentStore,
@@ -297,6 +301,7 @@ extension SegmentRecorder: SCStreamDelegate {
                 self.diagnostics.errorMessage = "stream stopped: \(error.localizedDescription)"
             }
         }
+        onCaptureFailure?()
     }
 }
 
