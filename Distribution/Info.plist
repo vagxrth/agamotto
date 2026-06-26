@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    Reference Info.plist for the eventual app bundle (Phase 3/5).
+    Not used by the SwiftPM spike build.
+  -->
+  <key>CFBundleName</key>
+  <string>Agamotto</string>
+  <!-- TODO: replace with your real reverse-DNS id (do NOT use com.apple.*) -->
+  <key>CFBundleIdentifier</key>
+  <string>com.example.agamotto</string>
+
+  <!-- Menu-bar agent: no Dock icon, runs in the background. -->
+  <key>LSUIElement</key>
+  <true/>
+
+  <key>LSMinimumSystemVersion</key>
+  <string>14.0</string>
+
+  <!-- Shown in the macOS microphone permission prompt. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Agamotto includes your microphone in instant-replay clips when mic capture is enabled.</string>
+</dict>
+</plist>

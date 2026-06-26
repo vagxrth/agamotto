@@ -1,0 +1,15 @@
+# SwiftPM / build
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode (for when we add an app target)
+DerivedData/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+
+# macOS
+.DS_Store
+
+# Spike capture output
+agamotto-spike-*.mp4
