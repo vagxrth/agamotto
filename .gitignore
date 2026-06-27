@@ -7,6 +7,10 @@ DerivedData/
 xcuserdata/
 *.xcuserstate
 
+# Release artifacts (Distribution/notarize.sh)
+build/
+*.xcarchive
+
 # macOS
 .DS_Store
 
