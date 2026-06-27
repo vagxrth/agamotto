@@ -74,15 +74,71 @@ struct SettingsView: View {
             }
 
             Section {
-                KeyboardShortcuts.Recorder("Save replay shortcut", name: .saveReplay) { _ in
-                    controller.refreshSaveShortcutLabel()
+                Toggle("Auto-pause for streaming apps", isOn: $controller.settings.autoPauseForProtectedApps)
+                if controller.settings.autoPauseForProtectedApps {
+                    ForEach(controller.settings.protectedApps) { app in
+                        HStack {
+                            Text(app.name)
+                            Spacer()
+                            Button {
+                                controller.settings.protectedApps.removeAll { $0.bundleID == app.bundleID }
+                            } label: {
+                                Image(systemName: "minus.circle.fill")
+                            }
+                            .buttonStyle(.borderless)
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+                    Menu("Add App…") {
+                        let apps = runningApps
+                        if apps.isEmpty {
+                            Text("No other apps running")
+                        } else {
+                            ForEach(apps) { app in
+                                Button(app.name) { controller.settings.protectedApps.append(app) }
+                            }
+                        }
+                    }
                 }
+            } header: {
+                Text("Protected playback")
+            } footer: {
+                Text("macOS blacks out DRM video (Netflix, Apple TV, Disney+, …) whenever the screen is being captured. Agamotto pauses while these apps are frontmost so they play, then resumes. For in-browser streaming, use the pause shortcut.")
+            }
+
+            Section {
+                KeyboardShortcuts.Recorder("Save replay", name: .saveReplay) { _ in
+                    controller.refreshShortcutLabels()
+                }
+                KeyboardShortcuts.Recorder("Pause / resume capture", name: .togglePause) { _ in
+                    controller.refreshShortcutLabels()
+                }
+            } header: {
+                Text("Shortcuts")
             } footer: {
                 Text("Changing resolution, frame rate, microphone, or buffer length briefly restarts capture.")
             }
         }
         .formStyle(.grouped)
         .frame(width: 440)
+    }
+
+    /// Currently-running regular apps (excluding Agamotto and already-listed ones), for the
+    /// "Add App…" picker so the user can mark their streaming apps without typing bundle IDs.
+    private var runningApps: [ProtectedApp] {
+        let added = Set(controller.settings.protectedApps.map(\.bundleID))
+        var seen = Set<String>()
+        return NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app -> ProtectedApp? in
+                guard let id = app.bundleIdentifier,
+                      id != Bundle.main.bundleIdentifier,
+                      !added.contains(id),
+                      seen.insert(id).inserted
+                else { return nil }
+                return ProtectedApp(bundleID: id, name: app.localizedName ?? id)
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     static var versionString: String {

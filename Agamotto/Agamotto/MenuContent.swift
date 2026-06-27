@@ -9,6 +9,10 @@ struct MenuContent: View {
         controller.saveShortcutLabel.isEmpty ? "" : "  \(controller.saveShortcutLabel)"
     }
 
+    private var pauseShortcutSuffix: String {
+        controller.pauseShortcutLabel.isEmpty ? "" : "  \(controller.pauseShortcutLabel)"
+    }
+
     var body: some View {
         Text(controller.statusText)
 
@@ -18,6 +22,10 @@ struct MenuContent: View {
             controller.saveReplay()
         }
         .disabled(!controller.canSave)
+
+        Button("\(controller.isPaused ? "Resume" : "Pause") Capture\(pauseShortcutSuffix)") {
+            controller.togglePause()
+        }
 
         if controller.lastClipURL != nil {
             Button("Reveal Last Clip in Finder") { controller.revealLastClip() }

@@ -23,6 +23,7 @@ struct AgamottoApp: App {
         switch controller.state {
         case .saving: "clock.badge.checkmark"
         case .armed: "clock.arrow.circlepath"
+        case .paused: "pause.circle"
         case .needsScreenPermission, .error: "exclamationmark.triangle"
         case .starting: "clock"
         }
@@ -45,6 +46,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // KeyboardShortcuts registers a Carbon hotkey under the hood.
         KeyboardShortcuts.onKeyDown(for: .saveReplay) {
             Task { @MainActor in ReplayController.shared.saveReplay() }
+        }
+
+        // Pause/resume capture (default ⌃⌥P) — e.g. before watching DRM video in a browser.
+        KeyboardShortcuts.onKeyDown(for: .togglePause) {
+            Task { @MainActor in ReplayController.shared.togglePause() }
         }
     }
 

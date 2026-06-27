@@ -15,6 +15,7 @@ final class ReplayController: ObservableObject {
         case starting
         case armed
         case saving
+        case paused
         case needsScreenPermission
         case error(String)
     }
@@ -24,6 +25,8 @@ final class ReplayController: ObservableObject {
     @Published private(set) var micActive = false
     /// Glyph form of the current save shortcut (e.g. "⌃⌥R"), kept in sync so the menu updates live.
     @Published private(set) var saveShortcutLabel: String = ""
+    /// Glyph form of the current pause shortcut, kept in sync for the menu.
+    @Published private(set) var pauseShortcutLabel: String = ""
 
     @Published var settings: AppSettings {
         didSet {
@@ -45,13 +48,20 @@ final class ReplayController: ObservableObject {
     private var restartTimestamps: [Date] = []
     private var displayChangeWork: DispatchWorkItem?
 
+    // Smart Pause: tear the capture session down while DRM/streaming apps are active
+    // (manual via hotkey/menu, or automatic when a protected app is frontmost).
+    private enum PauseReason { case manual, autoProtected }
+    private var pauseReason: PauseReason?
+    private var pendingPause: PauseReason?
+    private var autoResumeWork: DispatchWorkItem?
+
     private let liveDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("Agamotto/live", isDirectory: true)
     private var clipsDirectory: URL { settings.outputDirectory }
 
     private init() {
         settings = AppSettings.load()
-        refreshSaveShortcutLabel()
+        refreshShortcutLabels()
         // Restart capture when displays change (resolution, arrangement, monitor add/remove).
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -60,6 +70,16 @@ final class ReplayController: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor in self?.handleDisplayChange() }
         }
+        // Auto-pause while a DRM/streaming app is frontmost — macOS blanks protected video
+        // whenever the screen is being captured, so we get out of the way.
+        NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            let bundleID = (note.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier
+            Task { @MainActor in self?.handleFrontmostChange(bundleID) }
+        }
     }
 
     var statusText: String {
@@ -67,6 +87,7 @@ final class ReplayController: ObservableObject {
         case .starting: "Starting…"
         case .armed: micActive ? "Armed · system + mic" : "Armed · system audio"
         case .saving: "Saving replay…"
+        case .paused: pauseReason == .manual ? "Paused" : "Paused · streaming app open"
         case .needsScreenPermission: "Screen Recording permission needed"
         case .error(let message): "Error: \(message)"
         }
@@ -74,15 +95,22 @@ final class ReplayController: ObservableObject {
 
     var isArmed: Bool { state == .armed }
     var canSave: Bool { state == .armed }
+    var isPaused: Bool { pauseReason != nil }
 
     // MARK: - Lifecycle
 
     func start() {
+        // If a protected app is already frontmost at launch, come up paused (don't capture).
+        if shouldAutoPause(forFrontmost: NSWorkspace.shared.frontmostApplication?.bundleIdentifier) {
+            pauseReason = .autoProtected
+            state = .paused
+            return
+        }
         Task { await startEngine() }
     }
 
     private func startEngine() async {
-        guard recorder == nil else { return }
+        guard recorder == nil, pauseReason == nil else { return }
         state = .starting
 
         guard Permissions.screenRecordingGranted() else {
@@ -118,6 +146,12 @@ final class ReplayController: ObservableObject {
                 Task { @MainActor in self?.handleCaptureFailure() }
             }
             try await recorder.start()
+
+            // A pause may have arrived while the stream was starting up — honor it.
+            if pauseReason != nil {
+                await recorder.stop()
+                return
+            }
 
             self.store = store
             self.audioStore = audioStore
@@ -165,7 +199,7 @@ final class ReplayController: ObservableObject {
 
     /// Restart capture — unless a save is in flight, in which case restart once it finishes.
     private func requestRestart(reason: String) {
-        guard recorder != nil else { return } // not armed → nothing to recover
+        guard recorder != nil, pauseReason == nil else { return } // not armed / paused → nothing to recover
         if state == .saving {
             pendingRestart = true
             return
@@ -203,6 +237,59 @@ final class ReplayController: ObservableObject {
         await startEngine()
     }
 
+    // MARK: - Pause (Smart Pause)
+
+    /// Manual pause/resume (menu + hotkey). A manual pause "sticks" until manually resumed.
+    func togglePause() {
+        if pauseReason != nil { resume(trigger: .manual) }
+        else { pause(reason: .manual) }
+    }
+
+    private func pause(reason: PauseReason) {
+        autoResumeWork?.cancel()
+        if let current = pauseReason {
+            // Already paused; upgrade an auto-pause to manual so app-switching won't resume it.
+            if reason == .manual, current != .manual { pauseReason = .manual }
+            return
+        }
+        // Don't tear down mid-save; apply once the save finishes.
+        if state == .saving { pendingPause = reason; return }
+        pauseReason = reason
+        state = .paused
+        Task { await stop() } // tears down the SCStream → recording indicator clears → DRM plays
+    }
+
+    private func resume(trigger: PauseReason) {
+        guard let reason = pauseReason else { return }
+        // Auto-resume must never override a deliberate manual pause.
+        if trigger == .autoProtected, reason == .manual { return }
+        autoResumeWork?.cancel()
+        pauseReason = nil
+        Task { await startEngine() }
+    }
+
+    private func handleFrontmostChange(_ bundleID: String?) {
+        guard settings.autoPauseForProtectedApps else { return }
+        if shouldAutoPause(forFrontmost: bundleID) {
+            pause(reason: .autoProtected) // immediate, so protected video unblocks fast
+        } else {
+            scheduleAutoResume() // debounced, to avoid churn while alt-tabbing
+        }
+    }
+
+    private func shouldAutoPause(forFrontmost bundleID: String?) -> Bool {
+        guard settings.autoPauseForProtectedApps, let bundleID else { return false }
+        return settings.protectedApps.contains { $0.bundleID == bundleID }
+    }
+
+    private func scheduleAutoResume() {
+        guard pauseReason == .autoProtected else { return }
+        autoResumeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.resume(trigger: .autoProtected) }
+        autoResumeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+    }
+
     // MARK: - Save
 
     func saveReplay() {
@@ -232,7 +319,11 @@ final class ReplayController: ObservableObject {
             } catch {
                 self.state = .error("save failed: \(error)")
             }
-            if self.pendingRestart {
+            // A pause requested mid-save takes priority over a deferred restart.
+            if let reason = self.pendingPause {
+                self.pendingPause = nil
+                self.pause(reason: reason)
+            } else if self.pendingRestart {
                 self.pendingRestart = false
                 self.requestRestart(reason: "deferred after save")
             }
@@ -251,14 +342,11 @@ final class ReplayController: ObservableObject {
 
     // MARK: - Shortcut
 
-    /// Re-read the active save shortcut into `saveShortcutLabel`. Called at launch and from the
-    /// Settings recorder's `onChange`, so the menu's "Save Replay ⌃⌥R" suffix updates immediately.
-    func refreshSaveShortcutLabel() {
-        if let shortcut = KeyboardShortcuts.getShortcut(for: .saveReplay) {
-            saveShortcutLabel = "\(shortcut)"
-        } else {
-            saveShortcutLabel = ""
-        }
+    /// Re-read the active shortcuts into their labels. Called at launch and from the Settings
+    /// recorders' `onChange`, so the menu's shortcut suffixes update immediately (no relaunch).
+    func refreshShortcutLabels() {
+        saveShortcutLabel = KeyboardShortcuts.getShortcut(for: .saveReplay).map { "\($0)" } ?? ""
+        pauseShortcutLabel = KeyboardShortcuts.getShortcut(for: .togglePause).map { "\($0)" } ?? ""
     }
 
     // MARK: - Permissions
