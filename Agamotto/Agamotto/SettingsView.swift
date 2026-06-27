@@ -12,6 +12,25 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
+            Section {
+                HStack(spacing: 12) {
+                    Image(nsImage: NSApp.applicationIconImage)
+                        .resizable()
+                        .frame(width: 52, height: 52)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Agamotto").font(.headline)
+                        Text("Instant replay for your screen")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                        Text(Self.versionString)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+            }
+
             Section("Video") {
                 Picker("Resolution", selection: $controller.settings.resolution) {
                     ForEach(resolutions, id: \.self) { Text("\($0)p").tag($0) }
@@ -64,6 +83,13 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 440)
+    }
+
+    static var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = info?["CFBundleVersion"] as? String ?? "1"
+        return "Version \(short) (\(build))"
     }
 
     private func durationLabel(_ seconds: Int) -> String {

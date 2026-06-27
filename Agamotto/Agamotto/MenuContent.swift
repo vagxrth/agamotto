@@ -31,6 +31,11 @@ struct MenuContent: View {
             openSettings()
         }
 
+        Button("About Agamotto") {
+            NSApp.activate(ignoringOtherApps: true)
+            NSApp.orderFrontStandardAboutPanel(nil)
+        }
+
         if controller.state == .needsScreenPermission {
             Divider()
             Button("Grant Screen Recording…") { controller.grantScreenRecording() }
