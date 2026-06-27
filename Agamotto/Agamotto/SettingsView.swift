@@ -1,4 +1,5 @@
 import AppKit
+import KeyboardShortcuts
 import SwiftUI
 
 struct SettingsView: View {
@@ -54,7 +55,9 @@ struct SettingsView: View {
             }
 
             Section {
-                LabeledContent("Save hotkey", value: "⌃⌥R")
+                KeyboardShortcuts.Recorder("Save replay shortcut", name: .saveReplay) { _ in
+                    controller.refreshSaveShortcutLabel()
+                }
             } footer: {
                 Text("Changing resolution, frame rate, microphone, or buffer length briefly restarts capture.")
             }

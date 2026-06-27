@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		FB713E482FEEC983001B2879 /* AgamottoKit in Frameworks */ = {isa = PBXBuildFile; productRef = FB713E472FEEC983001B2879 /* AgamottoKit */; };
 		FB713E4B2FEECA11001B2879 /* AgamottoKit in Frameworks */ = {isa = PBXBuildFile; productRef = FB713E4A2FEECA11001B2879 /* AgamottoKit */; };
+		FB713E5A2FEF4256001B2879 /* KeyboardShortcuts in Frameworks */ = {isa = PBXBuildFile; productRef = FB713E592FEF4256001B2879 /* KeyboardShortcuts */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -43,6 +44,7 @@
 			files = (
 				FB713E482FEEC983001B2879 /* AgamottoKit in Frameworks */,
 				FB713E4B2FEECA11001B2879 /* AgamottoKit in Frameworks */,
+				FB713E5A2FEF4256001B2879 /* KeyboardShortcuts in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -87,6 +89,7 @@
 			packageProductDependencies = (
 				FB713E472FEEC983001B2879 /* AgamottoKit */,
 				FB713E4A2FEECA11001B2879 /* AgamottoKit */,
+				FB713E592FEF4256001B2879 /* KeyboardShortcuts */,
 			);
 			productName = Agamotto;
 			productReference = FB713E382FEEC930001B2879 /* Agamotto.app */;
@@ -118,6 +121,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				FB713E492FEECA11001B2879 /* XCLocalSwiftPackageReference "../AgamottoKit" */,
+				FB713E582FEF4256001B2879 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = FB713E392FEEC930001B2879 /* Products */;
@@ -372,6 +376,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		FB713E582FEF4256001B2879 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sindresorhus/KeyboardShortcuts";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.0.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		FB713E472FEEC983001B2879 /* AgamottoKit */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -380,6 +395,11 @@
 		FB713E4A2FEECA11001B2879 /* AgamottoKit */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = AgamottoKit;
+		};
+		FB713E592FEF4256001B2879 /* KeyboardShortcuts */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FB713E582FEF4256001B2879 /* XCRemoteSwiftPackageReference "KeyboardShortcuts" */;
+			productName = KeyboardShortcuts;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

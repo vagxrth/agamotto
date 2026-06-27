@@ -5,12 +5,16 @@ struct MenuContent: View {
     @ObservedObject private var controller = ReplayController.shared
     @Environment(\.openSettings) private var openSettings
 
+    private var saveShortcutSuffix: String {
+        controller.saveShortcutLabel.isEmpty ? "" : "  \(controller.saveShortcutLabel)"
+    }
+
     var body: some View {
         Text(controller.statusText)
 
         Divider()
 
-        Button("Save Replay  ⌃⌥R") {
+        Button("Save Replay\(saveShortcutSuffix)") {
             controller.saveReplay()
         }
         .disabled(!controller.canSave)

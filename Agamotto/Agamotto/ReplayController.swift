@@ -2,6 +2,7 @@ import AgamottoKit
 import AppKit
 import Combine
 import Foundation
+import KeyboardShortcuts
 
 /// App-level owner of the capture engine. Keeps a `SegmentRecorder` armed in the background,
 /// exposes state for the menu UI, and performs "save last N seconds" on demand. Configuration
@@ -21,6 +22,8 @@ final class ReplayController: ObservableObject {
     @Published private(set) var state: State = .starting
     @Published private(set) var lastClipURL: URL?
     @Published private(set) var micActive = false
+    /// Glyph form of the current save shortcut (e.g. "⌃⌥R"), kept in sync so the menu updates live.
+    @Published private(set) var saveShortcutLabel: String = ""
 
     @Published var settings: AppSettings {
         didSet {
@@ -48,6 +51,7 @@ final class ReplayController: ObservableObject {
 
     private init() {
         settings = AppSettings.load()
+        refreshSaveShortcutLabel()
         // Restart capture when displays change (resolution, arrangement, monitor add/remove).
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -243,6 +247,18 @@ final class ReplayController: ObservableObject {
     func openClipsFolder() {
         try? FileManager.default.createDirectory(at: clipsDirectory, withIntermediateDirectories: true)
         NSWorkspace.shared.open(clipsDirectory)
+    }
+
+    // MARK: - Shortcut
+
+    /// Re-read the active save shortcut into `saveShortcutLabel`. Called at launch and from the
+    /// Settings recorder's `onChange`, so the menu's "Save Replay ⌃⌥R" suffix updates immediately.
+    func refreshSaveShortcutLabel() {
+        if let shortcut = KeyboardShortcuts.getShortcut(for: .saveReplay) {
+            saveShortcutLabel = "\(shortcut)"
+        } else {
+            saveShortcutLabel = ""
+        }
     }
 
     // MARK: - Permissions

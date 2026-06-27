@@ -1,5 +1,5 @@
 import AppKit
-import Carbon.HIToolbox
+import KeyboardShortcuts
 import SwiftUI
 
 @main
@@ -32,8 +32,6 @@ struct AgamottoApp: App {
 /// Owns app lifecycle: starts the always-armed engine on launch, registers the global
 /// save hotkey, and stops the engine cleanly on quit.
 final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var saveHotKey: GlobalHotKey?
-
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Single instance: if another Agamotto is already capturing, defer to it.
         if isAnotherInstanceRunning() {
@@ -43,11 +41,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         ReplayController.shared.start()
 
-        // ⌃⌥R — global, works without focus and without an Accessibility prompt (Carbon).
-        saveHotKey = GlobalHotKey(
-            keyCode: UInt32(kVK_ANSI_R),
-            modifiers: UInt32(controlKey | optionKey)
-        ) {
+        // Global save shortcut (default ⌃⌥R, rebindable in Settings). No Accessibility prompt —
+        // KeyboardShortcuts registers a Carbon hotkey under the hood.
+        KeyboardShortcuts.onKeyDown(for: .saveReplay) {
             Task { @MainActor in ReplayController.shared.saveReplay() }
         }
     }
