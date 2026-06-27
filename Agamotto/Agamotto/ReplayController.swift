@@ -3,6 +3,7 @@ import AppKit
 import Combine
 import Foundation
 import KeyboardShortcuts
+import ServiceManagement
 
 /// App-level owner of the capture engine. Keeps a `SegmentRecorder` armed in the background,
 /// exposes state for the menu UI, and performs "save last N seconds" on demand. Configuration
@@ -27,6 +28,8 @@ final class ReplayController: ObservableObject {
     @Published private(set) var saveShortcutLabel: String = ""
     /// Glyph form of the current pause shortcut, kept in sync for the menu.
     @Published private(set) var pauseShortcutLabel: String = ""
+    /// Mirrors `SMAppService.mainApp` status so the Settings toggle reflects the real login-item state.
+    @Published private(set) var launchAtLogin: Bool = false
 
     @Published var settings: AppSettings {
         didSet {
@@ -62,6 +65,7 @@ final class ReplayController: ObservableObject {
     private init() {
         settings = AppSettings.load()
         refreshShortcutLabels()
+        refreshLaunchAtLogin()
         // Restart capture when displays change (resolution, arrangement, monitor add/remove).
         NotificationCenter.default.addObserver(
             forName: NSApplication.didChangeScreenParametersNotification,
@@ -347,6 +351,32 @@ final class ReplayController: ObservableObject {
     func refreshShortcutLabels() {
         saveShortcutLabel = KeyboardShortcuts.getShortcut(for: .saveReplay).map { "\($0)" } ?? ""
         pauseShortcutLabel = KeyboardShortcuts.getShortcut(for: .togglePause).map { "\($0)" } ?? ""
+    }
+
+    // MARK: - Launch at login
+
+    func refreshLaunchAtLogin() {
+        launchAtLogin = (SMAppService.mainApp.status == .enabled)
+    }
+
+    func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            switch (enabled, SMAppService.mainApp.status) {
+            case (true, let status) where status != .enabled:
+                try SMAppService.mainApp.register()
+            case (false, .enabled), (false, .requiresApproval):
+                try SMAppService.mainApp.unregister()
+            default:
+                break
+            }
+        } catch {
+            NSLog("Agamotto: launch-at-login toggle failed: \(error.localizedDescription)")
+        }
+        refreshLaunchAtLogin()
+        // If macOS requires explicit approval, take the user to the Login Items pane.
+        if enabled, SMAppService.mainApp.status == .requiresApproval {
+            SMAppService.openSystemSettingsLoginItems()
+        }
     }
 
     // MARK: - Permissions

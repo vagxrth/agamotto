@@ -31,6 +31,15 @@ struct SettingsView: View {
                 .padding(.vertical, 4)
             }
 
+            Section {
+                Toggle("Launch Agamotto at login", isOn: Binding(
+                    get: { controller.launchAtLogin },
+                    set: { controller.setLaunchAtLogin($0) }
+                ))
+            } footer: {
+                Text("Start Agamotto automatically and keep it armed after you log in.")
+            }
+
             Section("Video") {
                 Picker("Resolution", selection: $controller.settings.resolution) {
                     ForEach(resolutions, id: \.self) { Text("\($0)p").tag($0) }
@@ -121,6 +130,7 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .frame(width: 440)
+        .onAppear { controller.refreshLaunchAtLogin() }
     }
 
     /// Currently-running regular apps (excluding Agamotto and already-listed ones), for the
