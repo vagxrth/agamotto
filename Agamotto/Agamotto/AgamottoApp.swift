@@ -11,7 +11,7 @@ struct AgamottoApp: App {
         MenuBarExtra {
             MenuContent()
         } label: {
-            Image(systemName: menuBarSymbol)
+            menuBarLabel
         }
 
         Settings {
@@ -19,13 +19,18 @@ struct AgamottoApp: App {
         }
     }
 
-    private var menuBarSymbol: String {
+    /// Menu bar icon: the Eye of Agamotto template glyph — bright while capturing, and a
+    /// pre-dimmed template while paused (mirroring Apple's Focus on/off look). The dim is
+    /// baked into the asset's alpha because `.opacity()` is ignored on a menu bar template.
+    /// States that need attention fall back to a warning triangle so they stand out.
+    @ViewBuilder private var menuBarLabel: some View {
         switch controller.state {
-        case .saving: "clock.badge.checkmark"
-        case .armed: "clock.arrow.circlepath"
-        case .paused: "pause.circle"
-        case .needsScreenPermission, .error: "exclamationmark.triangle"
-        case .starting: "clock"
+        case .needsScreenPermission, .error:
+            Image(systemName: "exclamationmark.triangle")
+        case .paused:
+            Image("MenuBarEyeDim")
+        default:
+            Image("MenuBarEye")
         }
     }
 }
