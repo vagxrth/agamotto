@@ -33,6 +33,7 @@ struct MenuContent: View {
             NSApp.activate(ignoringOtherApps: true)
             openSettings()
         }
+        .keyboardShortcut(",")
 
         if controller.state == .needsScreenPermission {
             Divider()
