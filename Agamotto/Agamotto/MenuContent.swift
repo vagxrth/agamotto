@@ -29,7 +29,7 @@ struct MenuContent: View {
 
         Divider()
 
-        Button("Settings…") {
+        Button("Settings") {
             NSApp.activate(ignoringOtherApps: true)
             openSettings()
         }
