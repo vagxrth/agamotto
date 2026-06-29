@@ -89,7 +89,7 @@ final class ReplayController: ObservableObject {
     var statusText: String {
         switch state {
         case .starting: "Starting…"
-        case .armed: micActive ? "Armed · system + mic" : "Armed · system audio"
+        case .armed: "Armed"
         case .saving: "Saving replay…"
         case .paused: pauseReason == .manual ? "Paused" : "Paused · streaming app open"
         case .needsScreenPermission: "Screen Recording permission needed"
@@ -243,8 +243,15 @@ final class ReplayController: ObservableObject {
 
     // MARK: - Pause (Smart Pause)
 
+    private var lastManualToggle = Date.distantPast
+
     /// Manual pause/resume (menu + hotkey). A manual pause "sticks" until manually resumed.
     func togglePause() {
+        // Ignore a second trigger within 400ms (e.g. the global hotkey and the menu's native
+        // key-equivalent both firing, or an accidental double-press) so we don't tear the
+        // capture stream down and immediately back up.
+        guard Date().timeIntervalSince(lastManualToggle) > 0.4 else { return }
+        lastManualToggle = Date()
         if pauseReason != nil { resume(trigger: .manual) }
         else { pause(reason: .manual) }
     }
