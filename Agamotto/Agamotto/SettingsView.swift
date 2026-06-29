@@ -32,17 +32,15 @@ struct SettingsView: View {
             }
 
             Section {
-                Toggle("Launch Agamotto at login", isOn: Binding(
+                Toggle("Launch at Login", isOn: Binding(
                     get: { controller.launchAtLogin },
                     set: { controller.setLaunchAtLogin($0) }
                 ))
-            } footer: {
-                Text("Start Agamotto automatically and keep it armed after you log in.")
             }
 
             Section("Video") {
                 Picker("Resolution", selection: $controller.settings.resolution) {
-                    ForEach(resolutions, id: \.self) { Text("\($0)p").tag($0) }
+                    ForEach(resolutions, id: \.self) { Text(verbatim: "\($0)p").tag($0) }
                 }
                 Picker("Frame rate", selection: $controller.settings.fps) {
                     ForEach(fpsOptions, id: \.self) { Text("\($0) fps").tag($0) }
@@ -111,8 +109,6 @@ struct SettingsView: View {
                 }
             } header: {
                 Text("Protected playback")
-            } footer: {
-                Text("macOS blacks out DRM video (Netflix, Apple TV, Disney+, …) whenever the screen is being captured. Agamotto pauses while these apps are frontmost so they play, then resumes. For in-browser streaming, use the pause shortcut.")
             }
 
             Section {
@@ -124,8 +120,6 @@ struct SettingsView: View {
                 }
             } header: {
                 Text("Shortcuts")
-            } footer: {
-                Text("Changing resolution, frame rate, microphone, or buffer length briefly restarts capture.")
             }
         }
         .formStyle(.grouped)
