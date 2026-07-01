@@ -79,13 +79,23 @@ public final class SegmentRecorder: NSObject, @unchecked Sendable {
         super.init()
     }
 
-    public func start() async throws {
-        let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
-        guard let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() })
-            ?? content.displays.first
-        else {
-            throw CaptureError.noDisplay
+    /// Resolve the display to capture. `SCShareableContent` can momentarily return an empty
+    /// display list right after the screen sleeps/wakes or the audio/display graph reconfigures
+    /// (e.g. joining a call switches audio devices and briefly knocks capture over). That gap is
+    /// usually sub-second, so poll a few times before giving up rather than failing the start.
+    private static func resolveDisplay(attempts: Int = 5, retryDelay: Duration = .milliseconds(300)) async throws -> SCDisplay {
+        for attempt in 0..<attempts {
+            let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+            if let display = content.displays.first(where: { $0.displayID == CGMainDisplayID() }) ?? content.displays.first {
+                return display
+            }
+            if attempt < attempts - 1 { try? await Task.sleep(for: retryDelay) }
         }
+        throw CaptureError.noDisplay
+    }
+
+    public func start() async throws {
+        let display = try await Self.resolveDisplay()
 
         let (width, height) = config.resolution.dimensions
         let streamConfig = SCStreamConfiguration()

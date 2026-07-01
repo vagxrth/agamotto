@@ -50,6 +50,11 @@ final class ReplayController: ObservableObject {
     private var pendingRestart = false
     private var restartTimestamps: [Date] = []
     private var displayChangeWork: DispatchWorkItem?
+    // Auto-retry after a transient start failure (no display while the screen is asleep or the
+    // display list is mid-reconfiguration) so we never latch a dead error — capture re-arms once
+    // a display is available again.
+    private var startRetryWork: DispatchWorkItem?
+    private var startRetryCount = 0
 
     // Smart Pause: tear the capture session down while DRM/streaming apps are active
     // (manual via hotkey/menu, or automatic when a protected app is frontmost).
@@ -162,8 +167,10 @@ final class ReplayController: ObservableObject {
             self.recorder = recorder
             self.micActive = captureMic
             self.state = .armed
+            startRetryWork?.cancel()
+            startRetryCount = 0
         } catch {
-            self.state = .error(String(describing: error))
+            scheduleStartRetry(after: error)
         }
     }
 
@@ -203,7 +210,14 @@ final class ReplayController: ObservableObject {
 
     /// Restart capture — unless a save is in flight, in which case restart once it finishes.
     private func requestRestart(reason: String) {
-        guard recorder != nil, pauseReason == nil else { return } // not armed / paused → nothing to recover
+        guard pauseReason == nil else { return } // paused → nothing to recover
+        // Not armed. If we're stuck after a failed start, a display change (the screen waking, a
+        // monitor reconnected) is the cue to try coming back up now instead of waiting out the
+        // backoff timer; otherwise there's nothing to recover.
+        guard recorder != nil else {
+            if case .error = state { retryStartNow() }
+            return
+        }
         if state == .saving {
             pendingRestart = true
             return
@@ -241,6 +255,33 @@ final class ReplayController: ObservableObject {
         await startEngine()
     }
 
+    /// A start failed transiently — surface the reason but keep retrying with backoff so capture
+    /// re-arms automatically once a display is available again (screen wakes, call ends). Without
+    /// this a single empty-display result would latch `.error` until the user intervened.
+    private func scheduleStartRetry(after error: Error) {
+        guard recorder == nil, pauseReason == nil else { return }
+        state = .error(String(describing: error))
+        startRetryCount += 1
+        let delay = min(pow(2.0, Double(startRetryCount)), 30.0) // 2s, 4s, 8s … capped at 30s
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor in
+                guard let self, self.recorder == nil, self.pauseReason == nil else { return }
+                await self.startEngine()
+            }
+        }
+        startRetryWork?.cancel()
+        startRetryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    /// Cancel any pending backoff and attempt a start immediately (e.g. the screen just woke).
+    private func retryStartNow() {
+        startRetryWork?.cancel()
+        guard recorder == nil, pauseReason == nil else { return }
+        startRetryCount = 0
+        Task { await startEngine() }
+    }
+
     // MARK: - Pause (Smart Pause)
 
     private var lastManualToggle = Date.distantPast
@@ -258,6 +299,7 @@ final class ReplayController: ObservableObject {
 
     private func pause(reason: PauseReason) {
         autoResumeWork?.cancel()
+        startRetryWork?.cancel() // if we were retrying a failed start, a pause takes over
         if let current = pauseReason {
             // Already paused; upgrade an auto-pause to manual so app-switching won't resume it.
             if reason == .manual, current != .manual { pauseReason = .manual }
